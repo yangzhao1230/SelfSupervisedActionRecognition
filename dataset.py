@@ -39,9 +39,13 @@ class DataSet(torch.utils.data.Dataset):
         self.data = np.load(self.data_path)
         # N C T V M
         N, C, T, V, M = self.data.shape
-        self.data = self.data.transpose((0, 2, 1, 3, 4))
-        self.data = self.data.reshape(N, T, C * V * M)
-        self.size, self.max_frame, self.feature_dim = self.data.shape
+        # self.data = self.data.transpose((0, 2, 1, 3, 4))
+        # self.data = self.data.reshape(N, T, C * V * M)
+        # self.size, self.max_frame, self.feature_dim = self.data.shape
+        self.size = N
+        self.max_frame = T
+        self.feature_dim = C * V * M
+        
 
     def __len__(self) -> int:
         return self.size
