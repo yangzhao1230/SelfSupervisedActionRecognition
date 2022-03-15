@@ -5,7 +5,7 @@ from logger import Log
 
 import torch
 import torch.nn as nn
-
+import numpy as np
 from tqdm import tqdm
 
 from torch.utils.tensorboard import SummaryWriter
@@ -84,7 +84,7 @@ class BaseProcessor:
             self.train_epoch()
             self.val_epoch()
             self.test_epoch()
-            self.log.update_epoch()
+            self.log.update_epoch(self.epoch)
 
     @ex.capture
     def save_model(self, train_mode):
@@ -139,8 +139,7 @@ class RecognitionProcessor(BaseProcessor):
         if "linear" in train_mode:
             Z = Z.detach()
         # Z = mask_mean(Z, frame)
-        predict = self.classifier(Z)
-        predict = predict.mean(1)
+        predict = self.classifier(Z).mean(1)
         _, pred = torch.max(predict, 1)
         acc = pred.eq(label.view_as(pred)).float().mean()
 
@@ -165,8 +164,7 @@ class RecognitionProcessor(BaseProcessor):
             with torch.no_grad():
                 Z = self.encoder(data)
                 # Z = mask_mean(Z, frame)
-                predict = self.classifier(Z)
-                predict = predict.mean(1)
+                predict = self.classifier(Z).mean(1)
             _, pred = torch.max(predict, 1)
             acc = pred.eq(label.view_as(pred)).float().mean()
             cls_loss = self.CrossEntropyLoss(predict, label)
@@ -198,85 +196,18 @@ class RecognitionProcessor(BaseProcessor):
 
 class MS2LProcessor(BaseProcessor):
 
-    @ex.capture
-    def contrastive_loss(self, X, Y, temp):
-        shape = X.shape
-        X_norm = nn.functional.normalize(X, dim=1)
-        Y_norm = nn.functional.normalize(Y, dim=1)
-
-        S12 = X_norm.mm(Y_norm.t())
-        S21 = S12.t()
-        S11 = X_norm.mm(X_norm.t())
-        S22 = Y_norm.mm(Y_norm.t())
-
-        S11[range(shape[0]), range(shape[0])] = -1.
-        S22[range(shape[0]), range(shape[0])] = -1.
-
-        S1 = torch.cat([S12, S11], dim=1)
-        S2 = torch.cat([S22, S21], dim=1)
-
-        S = torch.cat([S1, S2], dim=0) / temp
-
-        Mask = torch.arange(S.shape[0], dtype=torch.long).cuda()
-
-        _, pred = torch.max(S, 1)
-        ctr_acc = pred.eq(Mask.view_as(pred)).float().mean()
-        ctr_loss = self.CrossEntropyLoss(S, Mask)
-
-        return ctr_acc, ctr_loss
-
     def load_model(self):
-        # self.temp_mask = TemporalMask()
-        # self.temp_jigsaw = TemporalJigsaw()
         self.encoder = Encoder()
         self.encoder = torch.nn.DataParallel(self.encoder).cuda()
-        # self.contra_head = Projector()
-        # self.contra_head = torch.nn.DataParallel(self.contra_head).cuda()
-        # self.jigsaw_head = Projector(feature_num=self.temp_jigsaw.jig_num)
-        # self.jigsaw_head = torch.nn.DataParallel(self.jigsaw_head).cuda()
-        # self.motion_head = Decoder()
-        # self.motion_head = torch.nn.DataParallel(self.motion_head).cuda()
+        
         self.btwins_head = BTwins()
         self.btwins_head = torch.nn.DataParallel(self.btwins_head).cuda()
 
     def load_optim(self):
         self.optimizer = torch.optim.Adam([
             {'params': self.encoder.parameters()},
-            # {'params': self.contra_head.parameters(), 'lr': 1e-3},
-            # {'params': self.jigsaw_head.parameters(), 'lr': 1e-3},
-            # {'params': self.motion_head.parameters(), 'lr': 1e-3}]
             {'params': self.btwins_head.parameters(), 'lr': 1e-3}], lr=1e-3)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=30, gamma=0.1)
-        # self.CrossEntropyLoss = torch.nn.CrossEntropyLoss().cuda()
-        # self.MSELoss = torch.nn.MSELoss().cuda()
-
-    # def motion_batch(self, data, feat_mask, frame):
-    #     predict = self.motion_head(feat_mask)
-    #     predict = mask_empty_frame(predict, frame)
-    #     mse_loss = self.MSELoss(predict, data)
-    #     self.log.update_batch("log/train/mse_loss", mse_loss.item())
-    #     return  mse_loss
-    #
-    # def jigsaw_batch(self, feat_jigs, label_jigs, frame):
-    #     predict = self.jigsaw_head(mask_mean(feat_jigs, frame))
-    #     jig_loss = self.CrossEntropyLoss(predict, label_jigs)
-    #     _, pred = torch.max(predict, 1)
-    #     jig_acc = pred.eq(label_jigs.view_as(pred)).float().mean()
-    #     self.log.update_batch("log/train/jig_acc", jig_acc.item())
-    #     self.log.update_batch("log/train/jig_loss", jig_loss.item())
-    #     return  jig_loss
-    #
-    # def contra_batch(self, feat, feat_mask, feat_jigs, frame):
-    #     feat = self.contra_head(mask_mean(feat, frame))
-    #     feat_mask = self.contra_head(mask_mean(feat_mask, frame))
-    #     feat_jigs = self.contra_head(mask_mean(feat_jigs, frame))
-    #     feat_mean = (feat + feat_mask + feat_jigs) / 3
-    #     ctr_acc, ctr_loss = zip(*[self.contrastive_loss(feat, feat_mean), self.contrastive_loss(feat_mask, feat_mean), self.contrastive_loss(feat_jigs, feat_mean)])
-    #     ctr_acc = sum(ctr_acc) / len(ctr_acc)
-    #     ctr_loss = sum(ctr_loss) / len(ctr_loss)
-    #     self.log.update_batch("log/train/ctr_acc", ctr_acc.item())
-    #     self.log.update_batch("log/train/ctr_loss", ctr_loss.item())
-    #     return  ctr_loss
 
     def btwins_batch(self, feat1, feat2):
         BTloss = self.btwins_head(feat1, feat2)
@@ -295,21 +226,13 @@ class MS2LProcessor(BaseProcessor):
             input1 = data
             noise = 0.1 * torch.randn(input1.shape)
             input2 = input1 + noise
-            # data_mask = self.temp_mask(data, frame)
-            # data_jigs, label_jigs = self.temp_jigsaw(data, frame)
 
             data = data.cuda()
             label = label.cuda()
             frame = frame.cuda()
             input1 = input1.cuda()
             input2 = input2.cuda()
-            # data_mask = data_mask.cuda()
-            # data_jigs = data_jigs.cuda()
-            # label_jigs = label_jigs.cuda()
-
-            # feat = self.encoder(data)
-            # feat_mask = self.encoder(data_mask)
-            # feat_jigs = self.encoder(data_jigs)
+        
             feat1 = self.encoder(input1)
             feat2 = self.encoder(input2)
 
@@ -318,9 +241,6 @@ class MS2LProcessor(BaseProcessor):
             self.optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), clip_gradient)
-            # torch.nn.utils.clip_grad_norm_(self.motion_head.parameters(), clip_gradient)
-            # torch.nn.utils.clip_grad_norm_(self.jigsaw_head.parameters(), clip_gradient)
-            # torch.nn.utils.clip_grad_norm_(self.contra_head.parameters(), clip_gradient)
             torch.nn.utils.clip_grad_norm_(self.btwins_head.parameters(), clip_gradient)
             self.optimizer.step()
 
@@ -331,12 +251,20 @@ class MS2LProcessor(BaseProcessor):
         for epoch in range(epoch_num):
             self.epoch = epoch
             self.train_epoch()
-            self.log.update_epoch()
+            self.log.update_epoch(self.epoch)
 
 
 # %%
 @ex.automain
 def main(train_mode):
+    # 固定随机种子
+    torch.cuda.manual_seed_all(1)
+    torch.manual_seed(1)
+    np.random.seed(1)
+    random.seed(1)
+    torch.backends.cudnn.deterministic = True
+    #torch.backends.cudnn.benchmark = False
+    #
     if "pretrain" in train_mode:
         p = MS2LProcessor()
         p.start()
