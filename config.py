@@ -10,12 +10,10 @@ def my_config():
     label_clip = 1.0
     clip_gradient = 10
     hidden_size = 600
-    temp = 0.9
     lamb = 0.9
     weight_path = './output/model/pretrain.pt'
+    log_path = './output/log/exp.log'
     train_mode = 'pretrain'
-    mask_ratio = 0.3
-    seg_num = 3
     gpus = "0"
     os.environ['CUDA_VISIBLE_DEVICES'] = gpus
     dataset = "NTU"
@@ -26,8 +24,8 @@ def my_config():
     joint_num = 25
     label_num = 60
     max_frame = 60
-    train_list = './data/ntu/xsub/train_data.npy'
-    test_list = './data/ntu/xsub/val_data.npy'
+    train_list = './data/ntu/xsub/train_data_joint.npy'
+    test_list = './data/ntu/xsub/val_data_joint.npy'
     train_label = './data/ntu/xsub/train_label.pkl'
     test_label = './data/ntu/xsub/val_label.pkl'
     train_frame = None
